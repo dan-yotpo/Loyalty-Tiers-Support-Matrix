@@ -83,9 +83,12 @@ button,input,textarea,select{font-family:inherit;}
   </header>
 
   <sc-if value="{{ adminMode }}" hint-placeholder-val="{{ false }}">
-    <div style="flex-shrink: 0; background: var(--admin-bg); border-bottom: 1px solid var(--admin-border); padding: 8px 24px; font-size: 12px; color: var(--admin-text); font-weight: 500; display: flex; align-items: center; gap: 8px; line-height: 1.4;">
-      <span style="flex-shrink: 0;">🔐</span>
-      <span>Admin Mode — all rows and columns visible. Must Do &amp; internal comments shown. Changes auto-save on blur. Drag ⠿ handles to reorder rows.</span>
+    <div style="flex-shrink: 0; background: var(--admin-bg); border-bottom: 1px solid var(--admin-border); padding: 8px 24px; font-size: 12px; color: var(--admin-text); font-weight: 500; display: flex; align-items: center; justify-content: space-between; gap: 12px; line-height: 1.4;">
+      <div style="display: flex; align-items: center; gap: 8px; min-width: 0;">
+        <span style="flex-shrink: 0;">🔐</span>
+        <span>Admin Mode — all rows and columns visible. Must Do &amp; internal comments shown. Changes auto-save on blur. Drag ⠿ to reorder rows.</span>
+      </div>
+      {{ syncBadge }}
     </div>
   </sc-if>
 
@@ -99,6 +102,7 @@ button,input,textarea,select{font-family:inherit;}
 
 {{ popoverEl }}
 {{ loginModal }}
+{{ syncModal }}
 </x-dc>
 <script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;: {&quot;width&quot;: 1400, &quot;height&quot;: 900}}">
 // ─── SEED DATA ────────────────────────────────────────────────────────────────
@@ -216,22 +220,33 @@ class Component extends DCLogic {
     popover: null,
     editingPlatformId: null,
     dragRowId: null, dragOverRowId: null,
+    firebaseUrl: '', syncOpen: false, syncInput: '', syncing: false, syncError: '',
   };
 
   ADMIN_USER = 'admin';
   ADMIN_PASS = '1qaz2wsx';
 
   componentDidMount() {
-    const saved = localStorage.getItem('ltm-v2-data');
-    if (saved) {
-      try {
-        const d = JSON.parse(saved);
-        this.setState({ platforms: d.platforms, features: d.features });
-      } catch (_) {
+    // Resolve Firebase URL from hash → localStorage → none
+    const hashMatch = window.location.hash.match(/[#&]?db=([^&]+)/);
+    const fbUrl = hashMatch
+      ? decodeURIComponent(hashMatch[1])
+      : (localStorage.getItem('ltm-v2-fburl') || '');
+    if (fbUrl) {
+      this.setState({ firebaseUrl: fbUrl, syncInput: fbUrl });
+      this.fetchFromFirebase(fbUrl);
+    } else {
+      const saved = localStorage.getItem('ltm-v2-data');
+      if (saved) {
+        try {
+          const d = JSON.parse(saved);
+          this.setState({ platforms: d.platforms, features: d.features });
+        } catch (_) {
+          this.setState({ platforms: INIT_PLATFORMS, features: INIT_FEATURES });
+        }
+      } else {
         this.setState({ platforms: INIT_PLATFORMS, features: INIT_FEATURES });
       }
-    } else {
-      this.setState({ platforms: INIT_PLATFORMS, features: INIT_FEATURES });
     }
 
     const dp = localStorage.getItem('ltm-v2-dark');
@@ -315,8 +330,69 @@ class Component extends DCLogic {
 
   persist() {
     const { platforms, features } = this.state;
-    if (platforms && features)
-      localStorage.setItem('ltm-v2-data', JSON.stringify({ platforms, features }));
+    if (!platforms || !features) return;
+    localStorage.setItem('ltm-v2-data', JSON.stringify({ platforms, features }));
+    this.pushToFirebase(platforms, features);
+  }
+
+  async fetchFromFirebase(url) {
+    const base = (url || '').replace(/\/$/, '');
+    if (!base) return;
+    try {
+      const res = await fetch(`${base}/ltm-matrix.json`);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      if (data && data.platforms && data.features) {
+        this.setState({ platforms: data.platforms, features: data.features, syncError: '' });
+        localStorage.setItem('ltm-v2-data', JSON.stringify(data));
+      } else {
+        // First time connecting — seed Firebase with current data
+        const seed = { platforms: INIT_PLATFORMS, features: INIT_FEATURES };
+        this.setState(seed);
+        await this.pushToFirebase(seed.platforms, seed.features, base);
+      }
+    } catch (err) {
+      this.setState({ syncError: 'Could not reach database: ' + err.message });
+      const saved = localStorage.getItem('ltm-v2-data');
+      if (saved) {
+        try { const d = JSON.parse(saved); this.setState({ platforms: d.platforms, features: d.features }); return; } catch (_) {}
+      }
+      this.setState({ platforms: INIT_PLATFORMS, features: INIT_FEATURES });
+    }
+  }
+
+  async pushToFirebase(platforms, features, url) {
+    const base = (url || this.state.firebaseUrl || '').replace(/\/$/, '');
+    if (!base) return;
+    this.setState({ syncing: true });
+    try {
+      const res = await fetch(`${base}/ltm-matrix.json`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ platforms, features }),
+      });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      this.setState({ syncError: '' });
+    } catch (err) {
+      this.setState({ syncError: 'Sync failed: ' + err.message });
+    } finally {
+      this.setState({ syncing: false });
+    }
+  }
+
+  async saveSyncConfig() {
+    const url = (this.state.syncInput || '').trim().replace(/\/$/, '');
+    if (!url) { this.setState({ syncOpen: false }); return; }
+    localStorage.setItem('ltm-v2-fburl', url);
+    history.replaceState(null, '', '#db=' + encodeURIComponent(url));
+    this.setState({ firebaseUrl: url, syncOpen: false, syncError: '' });
+    await this.fetchFromFirebase(url);
+  }
+
+  disconnectSync() {
+    localStorage.removeItem('ltm-v2-fburl');
+    history.replaceState(null, '', window.location.pathname);
+    this.setState({ firebaseUrl: '', syncInput: '', syncOpen: false, syncError: '' });
   }
 
   inferStatus(value) {
@@ -678,10 +754,72 @@ class Component extends DCLogic {
     );
   }
 
+  renderSyncModal() {
+    const { syncInput, syncError, syncing, firebaseUrl } = this.state;
+    const t = this.t;
+    const connected = !!firebaseUrl;
+    const shareUrl = connected ? (window.location.origin + window.location.pathname + '#db=' + encodeURIComponent(firebaseUrl)) : '';
+
+    return React.createElement('div', {
+      onClick: (e) => { if (e.target === e.currentTarget) this.setState({ syncOpen: false }); },
+      style: { position:'fixed', inset:0, background:t.modalBg, display:'flex', alignItems:'center', justifyContent:'center', zIndex:2000, backdropFilter:'blur(5px)', WebkitBackdropFilter:'blur(5px)' }
+    },
+      React.createElement('div', { style:{ background:t.surface, border:`1px solid ${t.border}`, borderRadius:'16px', padding:'28px 32px', width:'460px', boxShadow:t.shadow } }, [
+        React.createElement('h2', { key:'h', style:{ margin:'0 0 6px', fontSize:'18px', fontWeight:700, color:t.text } }, '☁ Firebase Sync'),
+        React.createElement('p', { key:'sub', style:{ margin:'0 0 20px', fontSize:'13px', color:t.textMuted, lineHeight:1.5 } },
+          'Connect to Firebase Realtime Database so admin edits are visible to all users. ' +
+          'Create a free project at firebase.google.com → Realtime Database, set rules to public read/write, then paste the database URL below.'
+        ),
+        React.createElement('label', { key:'lbl', style:{ display:'block', fontSize:'12px', fontWeight:600, color:t.textMuted, marginBottom:'6px', letterSpacing:'0.04em', textTransform:'uppercase' } }, 'Database URL'),
+        React.createElement('input', {
+          key:'url', type:'url',
+          placeholder:'https://your-project-default-rtdb.firebaseio.com',
+          value: syncInput,
+          onChange: (e) => this.setState({ syncInput: e.target.value }),
+          onKeyDown: (e) => { if (e.key === 'Enter') this.saveSyncConfig(); },
+          style: { ...inputBase(t), padding:'10px 12px', fontSize:'13px', borderRadius:'8px', marginBottom:'8px' }
+        }),
+        syncError && React.createElement('p', { key:'err', style:{ fontSize:'12px', color:'#f87171', margin:'0 0 8px' } }, syncError),
+        connected && React.createElement('div', { key:'share', style:{ background:t.surfaceAlt, border:`1px solid ${t.border}`, borderRadius:'8px', padding:'10px 12px', marginBottom:'16px' } }, [
+          React.createElement('p', { key:'sl', style:{ fontSize:'11px', fontWeight:600, color:t.textFaint, textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:'4px' } }, 'Shareable link (gives everyone live data)'),
+          React.createElement('div', { key:'su', style:{ display:'flex', gap:'8px', alignItems:'center' } }, [
+            React.createElement('span', { key:'url', style:{ fontSize:'12px', color:t.textMuted, wordBreak:'break-all', flex:1 } }, shareUrl),
+            React.createElement('button', { key:'copy', onClick:()=>navigator.clipboard.writeText(shareUrl).then(()=>{}), style:{ ...btnBase(t), fontSize:'11px', padding:'4px 10px', border:`1px solid ${t.border}`, borderRadius:'5px', flexShrink:0 } }, 'Copy'),
+          ]),
+        ]),
+        React.createElement('div', { key:'btns', style:{ display:'flex', gap:'8px', justifyContent:'space-between', alignItems:'center' } }, [
+          connected
+            ? React.createElement('button', { key:'disc', onClick:()=>this.disconnectSync(), style:{ fontSize:'13px', padding:'8px 14px', borderRadius:'8px', border:`1px solid ${t.border}`, background:'transparent', color:'#f87171', cursor:'pointer', fontWeight:500 } }, 'Disconnect')
+            : React.createElement('span', { key:'sp' }),
+          React.createElement('div', { key:'right', style:{ display:'flex', gap:'8px' } }, [
+            React.createElement('button', { key:'cancel', onClick:()=>this.setState({syncOpen:false}), style:{ fontSize:'13px', padding:'8px 16px', borderRadius:'8px', border:`1px solid ${t.border}`, background:'transparent', color:t.textMuted, cursor:'pointer', fontWeight:500 } }, 'Cancel'),
+            React.createElement('button', { key:'save', disabled:syncing, onClick:()=>this.saveSyncConfig(), style:{ fontSize:'13px', padding:'8px 20px', borderRadius:'8px', border:'none', background:t.accent, color:'#fff', cursor:'pointer', fontWeight:600, opacity:syncing?0.7:1 } }, syncing ? 'Connecting…' : 'Connect'),
+          ]),
+        ]),
+      ])
+    );
+  }
+
   renderVals() {
     const { platforms, features, adminMode, loginOpen } = this.state;
     const t = this.t;
     const loading = !platforms || !features;
+
+    const { syncOpen, firebaseUrl, syncing } = this.state;
+    const syncConnected = !!firebaseUrl;
+
+    const syncBadgeEl = React.createElement('button', {
+      onClick: () => this.setState({ syncOpen: true }),
+      title: syncConnected ? 'Sync connected — click to manage' : 'Set up Firebase sync',
+      style: {
+        display: 'inline-flex', alignItems: 'center', gap: '5px',
+        fontSize: '11px', fontWeight: 600, padding: '3px 10px', borderRadius: '5px',
+        border: `1px solid ${syncConnected ? t.accentBorder : t.border}`,
+        background: syncConnected ? t.accentBg : 'transparent',
+        color: syncConnected ? t.accent : t.textFaint,
+        cursor: 'pointer', flexShrink: 0,
+      }
+    }, syncing ? '⟳ Saving…' : syncConnected ? '☁ Synced' : '☁ Set up sync');
 
     return {
       tableEl: loading
@@ -689,7 +827,9 @@ class Component extends DCLogic {
         : this.renderTable(),
       popoverEl:  this.renderPopover(),
       loginModal: loginOpen ? this.renderLoginModal() : null,
+      syncModal:  syncOpen ? this.renderSyncModal() : null,
       legendEl:   (!loading && !adminMode) ? this.renderLegend() : null,
+      syncBadge:  adminMode ? syncBadgeEl : null,
       adminMode,
       showLoginBtn: !adminMode,
       darkIcon: this.isDark ? '☀' : '☾',
