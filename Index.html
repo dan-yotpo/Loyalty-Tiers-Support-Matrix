@@ -94,6 +94,8 @@ button,input,textarea,select{font-family:inherit;}
 
   {{ legendEl }}
 
+  {{ linksEl }}
+
   <div style="flex: 1; overflow: auto; min-height: 0;">
     {{ tableEl }}
   </div>
@@ -213,7 +215,7 @@ function inputBase(t) {
 
 class Component extends DCLogic {
   state = {
-    platforms: null, features: null,
+    platforms: null, features: null, links: null,
     adminMode: false,
     loginOpen: false, loginEmail: '', loginPassword: '', loginError: '',
     isDark: null,
@@ -240,12 +242,12 @@ class Component extends DCLogic {
       if (saved) {
         try {
           const d = JSON.parse(saved);
-          this.setState({ platforms: d.platforms, features: d.features });
+          this.setState({ platforms: d.platforms, features: d.features, links: d.links || [] });
         } catch (_) {
-          this.setState({ platforms: INIT_PLATFORMS, features: INIT_FEATURES });
+          this.setState({ platforms: INIT_PLATFORMS, features: INIT_FEATURES, links: [] });
         }
       } else {
-        this.setState({ platforms: INIT_PLATFORMS, features: INIT_FEATURES });
+        this.setState({ platforms: INIT_PLATFORMS, features: INIT_FEATURES, links: [] });
       }
     }
 
@@ -329,9 +331,9 @@ class Component extends DCLogic {
   }
 
   persist() {
-    const { platforms, features } = this.state;
+    const { platforms, features, links } = this.state;
     if (!platforms || !features) return;
-    localStorage.setItem('ltm-v2-data', JSON.stringify({ platforms, features }));
+    localStorage.setItem('ltm-v2-data', JSON.stringify({ platforms, features, links: links || [] }));
     this.pushToFirebase(platforms, features);
   }
 
@@ -343,11 +345,11 @@ class Component extends DCLogic {
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
       if (data && data.platforms && data.features) {
-        this.setState({ platforms: data.platforms, features: data.features, syncError: '' });
+        this.setState({ platforms: data.platforms, features: data.features, links: data.links || [], syncError: '' });
         localStorage.setItem('ltm-v2-data', JSON.stringify(data));
       } else {
         // First time connecting — seed Firebase with current data
-        const seed = { platforms: INIT_PLATFORMS, features: INIT_FEATURES };
+        const seed = { platforms: INIT_PLATFORMS, features: INIT_FEATURES, links: [] };
         this.setState(seed);
         await this.pushToFirebase(seed.platforms, seed.features, base);
       }
@@ -683,19 +685,20 @@ class Component extends DCLogic {
 
   renderLegend() {
     const t = this.t;
-    const statuses = ['supported','partial','not-supported','tbd'];
-    const labels = { supported:'Supported', partial:'Partial / Caveats', 'not-supported':'Not supported', tbd:'TBD / Under Review' };
+    const statuses = ['supported','not-supported','tbd'];
+    const labels = { supported:'Supported', 'not-supported':'Not supported', tbd:'Under Review' };
 
     return React.createElement('div', {
-      style: { flexShrink:0, display:'flex', alignItems:'center', gap:'10px', flexWrap:'wrap', padding:'10px 24px', borderBottom:`1px solid ${t.border}`, fontSize:'12px', background:t.bg }
+      style: { flexShrink:0, display:'flex', alignItems:'center', gap:'14px', flexWrap:'wrap', padding:'10px 24px', borderBottom:`1px solid ${t.border}`, fontSize:'12px', background:t.bg }
     }, [
       React.createElement('span', { key:'lbl', style:{ color:t.textFaint, fontWeight:600, fontSize:'10px', letterSpacing:'0.08em', textTransform:'uppercase', marginRight:'2px' } }, 'Legend:'),
       ...statuses.map(status => {
         const pc = this.pillColors(status);
+        const isTbd = status === 'tbd';
         const clickable = status !== 'supported';
         return React.createElement('div', { key:status, style:{ display:'flex', alignItems:'center', gap:'7px' } }, [
-          React.createElement('div', { key:'ic', style:{ width:24, height:24, borderRadius:'50%', background:pc.bg, color:pc.text, border:`1.5px ${clickable?'dashed':'solid'} ${pc.border}`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:'13px', fontWeight:700, flexShrink:0 } }, this.pillIcon(status)),
-          React.createElement('span', { key:'l', style:{ color:t.textMuted, fontWeight:500 } }, labels[status]),
+          React.createElement('div', { key:'ic', style:{ width: isTbd?30:24, height: isTbd?30:24, borderRadius:'50%', background:pc.bg, color:pc.text, border:`${isTbd?'2px':'1.5px'} ${clickable?'dashed':'solid'} ${pc.border}`, display:'flex', alignItems:'center', justifyContent:'center', fontSize: isTbd?'15px':'13px', fontWeight:700, flexShrink:0, boxShadow: isTbd?`0 0 0 3px ${pc.bg}, 0 0 0 4px ${pc.border}`:'none' } }, this.pillIcon(status)),
+          React.createElement('span', { key:'l', style:{ color: isTbd?t.text:t.textMuted, fontWeight: isTbd?700:500, fontSize: isTbd?'13px':'12px' } }, labels[status]),
         ]);
       }),
       React.createElement('span', { key:'note', style:{ color:t.textFaint, fontSize:'11px', marginLeft:'4px' } }, '· Click any non-Supported cell for details'),
@@ -800,6 +803,60 @@ class Component extends DCLogic {
     );
   }
 
+  renderLinks() {
+    const { links, adminMode } = this.state;
+    const t = this.t;
+    const linkList = links || [];
+
+    if (!adminMode && linkList.length === 0) return null;
+
+    const addLink = () => {
+      const newLink = { id: 'lk' + Date.now(), label: 'New Link', url: '' };
+      this.setState({ links: [...linkList, newLink] }, () => this.persist());
+    };
+    const updateLink = (id, field, val) => {
+      this.setState({ links: linkList.map(l => l.id === id ? { ...l, [field]: val } : l) }, () => this.persist());
+    };
+    const deleteLink = (id) => {
+      this.setState({ links: linkList.filter(l => l.id !== id) }, () => this.persist());
+    };
+
+    if (adminMode) {
+      return React.createElement('div', {
+        style: { flexShrink:0, borderTop:`1px solid ${t.adminBorder}`, padding:'10px 24px', background:t.adminBg, display:'flex', flexDirection:'column', gap:'8px' }
+      }, [
+        React.createElement('div', { key:'hdr', style:{ display:'flex', alignItems:'center', justifyContent:'space-between' } }, [
+          React.createElement('span', { key:'ttl', style:{ fontSize:'10px', fontWeight:700, letterSpacing:'0.08em', textTransform:'uppercase', color:t.adminText } }, 'Crucial Links'),
+          React.createElement('button', { key:'add', onClick:addLink, style:{ ...btnBase(t), color:t.accent, fontSize:'12px', padding:'4px 12px', border:`1px solid ${t.accentBorder}`, borderRadius:'6px', fontWeight:600 } }, '+ Add link'),
+        ]),
+        ...linkList.map(l =>
+          React.createElement('div', { key:l.id, style:{ display:'flex', gap:'8px', alignItems:'center' } }, [
+            React.createElement('input', { key:'lbl', defaultValue:l.label, placeholder:'Display label', onBlur:(e)=>updateLink(l.id,'label',e.target.value), style:{ ...inputBase(t), width:'200px', flexShrink:0 } }),
+            React.createElement('input', { key:'url', defaultValue:l.url, placeholder:'https://…', type:'url', onBlur:(e)=>updateLink(l.id,'url',e.target.value), style:{ ...inputBase(t), flex:1 } }),
+            React.createElement('button', { key:'del', onClick:()=>deleteLink(l.id), title:'Remove link', style:{ ...btnBase(t), color:'#f87171', flexShrink:0 } }, '✕'),
+          ])
+        ),
+      ]);
+    }
+
+    const visibleLinks = linkList.filter(l => l.url);
+    if (visibleLinks.length === 0) return null;
+
+    return React.createElement('div', {
+      style: { flexShrink:0, borderBottom:`1px solid ${t.accentBorder}`, padding:'11px 24px', background:t.accentBg, display:'flex', alignItems:'center', gap:'24px', flexWrap:'wrap' }
+    }, [
+      React.createElement('span', { key:'lbl', style:{ fontSize:'11px', fontWeight:700, letterSpacing:'0.07em', textTransform:'uppercase', color:t.accent, flexShrink:0, opacity:0.7 } }, 'Crucial Links'),
+      React.createElement('div', { key:'sep', style:{ width:'1px', height:'16px', background:t.accentBorder, flexShrink:0 } }),
+      ...visibleLinks.map((l, i) => [
+        i > 0 && React.createElement('span', { key:'dot'+l.id, style:{ color:t.accentBorder, fontSize:'14px', flexShrink:0 } }, '·'),
+        React.createElement('a', {
+          key:l.id, href:l.url, target:'_blank', rel:'noopener noreferrer',
+          style:{ fontSize:'13px', fontWeight:600, color:t.accent, textDecoration:'none', borderBottom:`1.5px solid ${t.accentBorder}`, paddingBottom:'1px' }
+        }, l.label || l.url),
+      ].filter(Boolean)).flat(),
+    ]);
+  }
+
   renderVals() {
     const { platforms, features, adminMode, loginOpen } = this.state;
     const t = this.t;
@@ -829,6 +886,7 @@ class Component extends DCLogic {
       loginModal: loginOpen ? this.renderLoginModal() : null,
       syncModal:  syncOpen ? this.renderSyncModal() : null,
       legendEl:   (!loading && !adminMode) ? this.renderLegend() : null,
+      linksEl:    !loading ? this.renderLinks() : null,
       syncBadge:  adminMode ? syncBadgeEl : null,
       adminMode,
       showLoginBtn: !adminMode,
